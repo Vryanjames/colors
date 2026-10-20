@@ -1,0 +1,562 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Click to Add Flowers</title>
+
+    <style>
+        html, body {
+            overflow: hidden;
+            padding: 0;
+            margin: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        .container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .name {
+            font-family: sans-serif;
+            position: absolute;
+            top: 30%;
+            left: 0;
+            width: 100%;
+            height: 70%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: black;
+            text-align: center;
+            font-size: 20px;
+            text-shadow: 0 0 3px white;
+            user-select: none;
+            pointer-events: none;
+        }
+
+        .name span {
+            background-color: rgba(255, 255, 255, 0.6);
+        }
+
+        .render-toggle {
+            position: fixed;
+            left: 0;
+            bottom: 0;
+            z-index: 1;
+            font-family: sans-serif;
+            font-size: 15px;
+            text-shadow: 0 0 4px white;
+            user-select: none;
+            padding: 0 0 15px 20px;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <canvas id="canvas"></canvas>
+
+        <div class="name">
+            <span>Click To Add Flowers</span>
+        </div>
+
+        <div class="render-toggle">freeze</div>
+    </div>
+
+    <script type="x-shader/x-fragment" id="fragmentShader">
+        uniform float u_ratio;
+        uniform vec2 u_point;
+        uniform float u_time;
+        uniform float u_stop_time;
+        uniform vec3 u_stop_randomizer;
+        uniform sampler2D u_texture;
+        uniform vec3 u_background_color;
+
+        varying vec2 vUv;
+
+        #define PI 3.14159265359
+
+        vec3 mod289(vec3 x) {
+            return x - floor(x * (1.0 / 289.0)) * 289.0;
+        }
+
+        vec2 mod289(vec2 x) {
+            return x - floor(x * (1.0 / 289.0)) * 289.0;
+        }
+
+        vec3 permute(vec3 x) {
+            return mod289(((x * 34.0) + 1.0) * x);
+        }
+
+        float snoise(vec2 v) {
+            const vec4 C = vec4(
+                0.211324865405187,
+                0.366025403784439,
+                -0.577350269189626,
+                0.024390243902439
+            );
+
+            vec2 i = floor(v + dot(v, C.yy));
+            vec2 x0 = v - i + dot(i, C.xx);
+            vec2 i1 = (x0.x > x0.y)
+                ? vec2(1.0, 0.0)
+                : vec2(0.0, 1.0);
+
+            vec4 x12 = x0.xyxy + C.xxzz;
+            x12.xy -= i1;
+            i = mod289(i);
+
+            vec3 p = permute(
+                permute(i.y + vec3(0.0, i1.y, 1.0))
+                + i.x + vec3(0.0, i1.x, 1.0)
+            );
+
+            vec3 m = max(
+                0.5 - vec3(
+                    dot(x0, x0),
+                    dot(x12.xy, x12.xy),
+                    dot(x12.zw, x12.zw)
+                ),
+                0.0
+            );
+
+            m *= m;
+            m *= m;
+
+            vec3 x = 2.0 * fract(p * C.www) - 1.0;
+            vec3 h = abs(x) - 0.5;
+            vec3 ox = floor(x + 0.5);
+            vec3 a0 = x - ox;
+
+            m *= 1.79284291400159
+                - 0.85373472095314 * (a0 * a0 + h * h);
+
+            vec3 g;
+            g.x = a0.x * x0.x + h.x * x0.y;
+            g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+
+            return 130.0 * dot(m, g);
+        }
+
+        float get_dot_shape(
+            vec2 dist,
+            float radius_max,
+            float radius_line
+        ) {
+            return 1.0 - smoothstep(
+                radius_line * radius_max,
+                radius_max,
+                dot(dist, dist) * 4.0
+            );
+        }
+
+        float get_stem_shape(
+            vec2 _cursor,
+            vec2 _uv,
+            float _t,
+            float _size,
+            float _flowery,
+            vec2 _rand
+        ) {
+            float stroke_width = 0.01;
+            float noise_power = 0.2;
+
+            float cursor_horizontal_noise =
+                noise_power * (1.0 + (1.0 - _flowery))
+                * snoise(3.0 * _uv * (_rand - 0.5));
+
+            cursor_horizontal_noise *=
+                pow(dot(_cursor.y, _cursor.y), 0.3 * _flowery);
+
+            cursor_horizontal_noise *=
+                pow(dot(_uv.y, _uv.y), 0.3);
+
+            _cursor.x += cursor_horizontal_noise;
+
+            _cursor.y *= (1.0 - ((1.0 - _flowery) * 0.7));
+            _cursor.y += ((1.0 - _flowery) * 0.7 * _rand.x);
+
+            stroke_width =
+                (1.0 - _flowery) * 0.9
+                * pow(dot(_uv.y, _cursor.x), 1.0)
+                + _flowery * 0.03;
+
+            stroke_width -= 0.02;
+
+            float left = smoothstep(-stroke_width, 0.0, _cursor.x);
+            float right = smoothstep(stroke_width, 0.0, _cursor.x);
+
+            float stem_shape = left * right;
+
+            float stem_top_mask = smoothstep(
+                _cursor.y - 0.1,
+                _cursor.y,
+                min(-0.1, _t - 1.0)
+            );
+
+            stem_shape *= stem_top_mask;
+            stem_shape += 0.5 * get_dot_shape(
+                _cursor + vec2(0.0, 0.02),
+                0.15 * _size,
+                0.5
+            );
+
+            stem_shape *= stem_top_mask;
+
+            return stem_shape;
+        }
+
+        void main() {
+            float speed = 1.3;
+            float t = speed * u_stop_time;
+
+            vec2 uv = vUv;
+
+            uv += 0.00007 * snoise(
+                vUv * 6.0
+                + vec2(0.0, 15.0 * cos(0.1 * u_time))
+            );
+
+            uv.y += 0.00005;
+
+            vec3 color = texture2D(u_texture, uv).xyz;
+            color += 0.0015 * u_background_color;
+
+            vec2 cursor = uv - u_point.xy;
+            cursor.x *= u_ratio;
+
+            float base_radius = 0.02 + 0.2 * u_stop_randomizer.y;
+            float grow_duration = 0.6;
+            float grow_speed = 2.0 * speed;
+            float bloom_duration = 0.3 * u_stop_randomizer.y;
+
+            float is_open = step(0.1, base_radius);
+
+            if (t < grow_duration) {
+                vec3 stem_color =
+                    u_background_color - normalize(vec3(0.3, 0.5, 0.1));
+
+                float stem_shape = get_stem_shape(
+                    cursor, uv, grow_speed * t,
+                    base_radius, 1.0, u_stop_randomizer.xy
+                );
+
+                stem_shape += get_stem_shape(
+                    cursor, uv, grow_speed * t,
+                    0.0, 0.0, u_stop_randomizer.yz
+                );
+
+                stem_shape += get_stem_shape(
+                    cursor, uv, grow_speed * t,
+                    0.0, 0.0, u_stop_randomizer.zy
+                );
+
+                vec3 stem = stem_shape * stem_color;
+                color -= stem;
+            }
+
+            if (t < grow_duration + is_open * bloom_duration) {
+                float blooming_time = max(
+                    0.0, pow(1.1 * t, 2.0) - 0.05
+                );
+
+                float radius = base_radius * blooming_time;
+
+                vec2 noisy_cursor = vUv - u_point.xy;
+                noisy_cursor.x *= u_ratio;
+                noisy_cursor.y *=
+                    (1.0 + u_stop_randomizer.y * is_open);
+
+                noisy_cursor -= 0.02 * snoise(
+                    noisy_cursor * 10.0
+                    + vec2(0.0, 10.0 * sin(0.5 * t + PI))
+                );
+
+                vec3 flower_color = u_background_color;
+                flower_color -= normalize(vec3(
+                    0.5 + 0.5 * sin(2.0 * u_time),
+                    0.3,
+                    0.5 + 0.5 * sin(2.0 * u_time + PI)
+                ));
+
+                color -= 0.4 * get_dot_shape(
+                    noisy_cursor, 1.5 * radius, 0.0
+                ) * flower_color;
+
+                color = 0.7 * color + 0.3 * mix(
+                    u_background_color,
+                    color,
+                    1.0 - get_dot_shape(noisy_cursor, radius, 0.0)
+                );
+
+                noisy_cursor.y -= 0.02;
+
+                float inner_r = 0.7 * radius;
+                float inner_w = 0.2 * radius;
+
+                float ring_shape =
+                    get_dot_shape(
+                        noisy_cursor, inner_r + inner_w, 0.9
+                    )
+                    - get_dot_shape(noisy_cursor, inner_r, 0.9);
+
+                color += 0.2 * blooming_time * ring_shape
+                    * step(0.1, base_radius);
+
+                inner_r = 0.4 * radius;
+                inner_w = 0.1 * radius;
+
+                ring_shape =
+                    get_dot_shape(
+                        noisy_cursor, inner_r + inner_w, 0.9
+                    )
+                    - get_dot_shape(noisy_cursor, inner_r, 0.9);
+
+                color += 0.1 * pow(t, 0.5) * ring_shape
+                    * step(0.1, base_radius);
+
+                vec2 low_noise_cursor = vUv - u_point.xy;
+                low_noise_cursor.x *= 0.5 * u_ratio;
+                low_noise_cursor.y += 0.02;
+
+                low_noise_cursor += 0.01 * snoise(
+                    low_noise_cursor * 10.0 + vec2(t)
+                );
+
+                color -= is_open * pow(t, 5.0) * get_dot_shape(
+                    low_noise_cursor, 0.01 * radius, 0.0
+                );
+            }
+
+            gl_FragColor = vec4(color, 1.0);
+        }
+    </script>
+
+    <script type="x-shader/x-vertex" id="vertexShader">
+        varying vec2 vUv;
+
+        void main() {
+            vUv = uv;
+            gl_Position = vec4(position, 1.0);
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from
+            "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.151.0/three.module.js";
+
+        const canvasEl = document.querySelector("#canvas");
+        const toggleEl = document.querySelector(".render-toggle");
+
+        const pointer = {
+            x: 0.65,
+            y: 0.3,
+            clicked: true
+        };
+
+        let isRendering = true;
+        let renderer, shaderScene, mainScene;
+        let renderTargets, camera, clock;
+        let basicMaterial, shaderMaterial;
+        let isStart = true;
+
+        const backgroundColor = new THREE.Color(0xffffff);
+
+        function initScene() {
+            renderer = new THREE.WebGLRenderer({
+                canvas: canvasEl,
+                alpha: true,
+                antialias: true
+            });
+
+            renderer.setPixelRatio(
+                Math.min(window.devicePixelRatio, 2)
+            );
+
+            shaderScene = new THREE.Scene();
+            mainScene = new THREE.Scene();
+
+            camera = new THREE.OrthographicCamera(
+                -1, 1, 1, -1, 0, 1
+            );
+
+            clock = new THREE.Clock();
+
+            renderTargets = [
+                new THREE.WebGLRenderTarget(
+                    window.innerWidth, window.innerHeight
+                ),
+                new THREE.WebGLRenderTarget(
+                    window.innerWidth, window.innerHeight
+                )
+            ];
+
+            const planeGeometry = new THREE.PlaneGeometry(2, 2);
+
+            shaderMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    u_ratio: {
+                        type: "f",
+                        value: window.innerWidth / window.innerHeight
+                    },
+                    u_point: {
+                        type: "v2",
+                        value: new THREE.Vector2(pointer.x, pointer.y)
+                    },
+                    u_time: { type: "f", value: 0.0 },
+                    u_stop_time: { type: "f", value: 0.0 },
+                    u_stop_randomizer: {
+                        type: "v3",
+                        value: new THREE.Vector3(0, 0, 0)
+                    },
+                    u_texture: { type: "t", value: null },
+                    u_background_color: {
+                        type: "v3",
+                        value: backgroundColor
+                    }
+                },
+                vertexShader:
+                    document.querySelector("#vertexShader").textContent,
+                fragmentShader:
+                    document.querySelector("#fragmentShader").textContent,
+                transparent: true
+            });
+
+            basicMaterial = new THREE.MeshBasicMaterial({
+                transparent: true
+            });
+
+            const backgroundMaterial = new THREE.MeshBasicMaterial({
+                color: backgroundColor,
+                transparent: true
+            });
+
+            const planeBasic = new THREE.Mesh(
+                planeGeometry, basicMaterial
+            );
+
+            const planeShader = new THREE.Mesh(
+                planeGeometry, shaderMaterial
+            );
+
+            const coloredPlane = new THREE.Mesh(
+                planeGeometry, backgroundMaterial
+            );
+
+            shaderScene.add(planeShader);
+            mainScene.add(coloredPlane);
+
+            renderer.setRenderTarget(renderTargets[0]);
+            renderer.render(mainScene, camera);
+
+            mainScene.remove(coloredPlane);
+            mainScene.add(planeBasic);
+
+            renderer.setRenderTarget(null);
+        }
+
+        function handleClickOrTouch(e) {
+            if (e.target === toggleEl) {
+                isRendering = !isRendering;
+                toggleEl.textContent =
+                    isRendering ? "freeze" : "unfreeze";
+                return;
+            }
+
+            e.preventDefault();
+
+            const point = e.touches ? e.touches[0] : e;
+
+            pointer.x = point.clientX / window.innerWidth;
+            pointer.y = point.clientY / window.innerHeight;
+            pointer.clicked = true;
+
+            isRendering = true;
+            toggleEl.textContent = "freeze";
+        }
+
+        function updateSize() {
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+
+            renderer.setSize(width, height);
+
+            shaderMaterial.uniforms.u_ratio.value = width / height;
+
+            renderTargets.forEach(target => {
+                target.setSize(width, height);
+            });
+        }
+
+        function render() {
+            requestAnimationFrame(render);
+
+            const delta = clock.getDelta();
+
+            if (!isRendering) return;
+
+            shaderMaterial.uniforms.u_texture.value =
+                renderTargets[0].texture;
+
+            shaderMaterial.uniforms.u_time.value =
+                clock.getElapsedTime() + 0.9;
+
+            if (pointer.clicked) {
+                shaderMaterial.uniforms.u_point.value =
+                    new THREE.Vector2(pointer.x, 1 - pointer.y);
+
+                shaderMaterial.uniforms.u_stop_randomizer.value =
+                    isStart
+                        ? new THREE.Vector3(0.5, 1, 1)
+                        : new THREE.Vector3(
+                            Math.random(),
+                            Math.random(),
+                            Math.random()
+                        );
+
+                isStart = false;
+                shaderMaterial.uniforms.u_stop_time.value = 0.0;
+                pointer.clicked = false;
+            }
+
+            shaderMaterial.uniforms.u_stop_time.value += delta;
+
+            renderer.setRenderTarget(renderTargets[1]);
+            renderer.render(shaderScene, camera);
+
+            basicMaterial.map = renderTargets[1].texture;
+
+            renderer.setRenderTarget(null);
+            renderer.render(mainScene, camera);
+
+            const temp = renderTargets[0];
+            renderTargets[0] = renderTargets[1];
+            renderTargets[1] = temp;
+        }
+
+        initScene();
+        updateSize();
+
+        window.addEventListener("resize", updateSize);
+        window.addEventListener("click", handleClickOrTouch);
+        window.addEventListener("touchstart", handleClickOrTouch, {
+            passive: false
+        });
+
+        render();
+    </script>
+</body>
+</html>
